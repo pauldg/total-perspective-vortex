@@ -118,6 +118,7 @@ class Tool:
         resource_requirements: list[ResourceRequirement] | None = None,
         dynamic_tool: DynamicTool | None = None,
         tool_type: str = "default",
+        requires_galaxy_python_environment: bool = False,
     ):
         self.id = id
         self.old_id = id
@@ -126,3 +127,4 @@ class Tool:
         self.resource_requirements = resource_requirements or []
         self.dynamic_tool = dynamic_tool
         self.tool_type = tool_type
+        self.requires_galaxy_python_environment = requires_galaxy_python_environment
