@@ -234,6 +234,7 @@ class EntityToDestinationMapper(object):
                 "resource_params": resource_params,
                 "workflow_invocation_uuid": workflow_invocation_uuid,
                 "mapper": self,
+                "tpv_debug": False,  # Initialize debug flag
             }
         )
 
@@ -262,9 +263,20 @@ class EntityToDestinationMapper(object):
             if wait_exception_raised:
                 raise JobNotReadyException()  # type: ignore[no-untyped-call]
 
-        # No matching destinations. Throw an exception
+        # No matching destinations. Set debug flag to True to enable debug logging and raise exception
+        context["tpv_debug"] = True
         from galaxy.jobs.mapper import JobMappingException
 
+        # Log detailed debug information about why no destinations matched
+        log.debug("No destinations available - detailed matching information:")
+        for dest_id, dest in self.destinations.items():
+            evaluated_entity_for_debug = evaluated_entity.evaluate_resources(context)
+            dest_matches = dest.matches(evaluated_entity_for_debug, context)
+            log.debug(f"Destination '{dest_id}': match={dest_matches}")
+            if not dest_matches:
+                # This will trigger the detailed debug logging in the match function
+                evaluated_entity.tpv_tags.match(dest.tpv_dest_tags, debug=True)
+        
         raise JobMappingException(
             f"No destinations are available to fulfill request: {evaluated_entity.id}"
         )  # type: ignore[no-untyped-call]

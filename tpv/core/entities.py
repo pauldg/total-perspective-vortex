@@ -211,18 +211,43 @@ class SchedulingTags(BaseModel):
 
         return new_tags
 
-    def match(self, other: "SchedulingTags") -> bool:
+    def match(self, other: "SchedulingTags", debug: bool = False) -> bool:
         self_required = set(self.require or [])
         other_required = set(other.require or [])
         self_rejected = set(self.reject or [])
         other_rejected = set(other.reject or [])
 
-        return (
-            self_required.issubset(other.all_tag_values())
-            and other_required.issubset(self.all_tag_values())
-            and not self_rejected.intersection(other.all_tag_values())
-            and not other_rejected.intersection(self.all_tag_values())
-        )
+        # Check each condition and collect failure reasons if debug is enabled
+        failures = []
+        
+        # Check self_required.issubset(other.all_tag_values())
+        if not self_required.issubset(set(other.all_tag_values())):
+            missing_tags = self_required - set(other.all_tag_values())
+            failures.append(f"Job requires {list(missing_tags)} but destination doesn't provide them")
+        
+        # Check other_required.issubset(self.all_tag_values())
+        if not other_required.issubset(set(self.all_tag_values())):
+            missing_tags = other_required - set(self.all_tag_values())
+            failures.append(f"Destination requires {list(missing_tags)} but job doesn't provide them")
+        
+        # Check not self_rejected.intersection(other.all_tag_values())
+        rejected_intersection = self_rejected.intersection(set(other.all_tag_values()))
+        if rejected_intersection:
+            failures.append(f"Job rejects {list(rejected_intersection)} but destination provides them")
+        
+        # Check not other_rejected.intersection(self.all_tag_values())
+        rejected_intersection = other_rejected.intersection(set(self.all_tag_values()))
+        if rejected_intersection:
+            failures.append(f"Destination rejects {list(rejected_intersection)} but job provides them")
+
+        # Log debug information if enabled and there are failures
+        if debug and failures:
+            log.debug(f"SchedulingTags.match() failed. Reasons: {'; '.join(failures)}")
+            log.debug(f"Job tags - require: {list(self_required)}, prefer: {set(self.prefer or [])}, accept: {set(self.accept or [])}, reject: {list(self_rejected)}")
+            log.debug(f"Destination tags - require: {list(other_required)}, prefer: {set(other.prefer or [])}, accept: {set(other.accept or [])}, reject: {list(other_rejected)}")
+
+        # Return True only if all conditions are met
+        return len(failures) == 0
 
     def score(self, other: "SchedulingTags") -> int:
         return (
@@ -353,7 +378,6 @@ class Entity(BaseModel):
         self.override_single_property(new_entity, self, entity, "min_gpus")
         self.override_single_property(new_entity, self, entity, "max_cores")
         self.override_single_property(new_entity, self, entity, "max_mem")
-        self.override_single_property(new_entity, self, entity, "max_gpus")
         self.override_single_property(new_entity, self, entity, "max_gpus")
         self.override_single_property(
             new_entity,
@@ -661,37 +685,63 @@ class Destination(EntityWithRules):
         :param destination:
         :return:
         """
+        debug = context.get("tpv_debug", False)
+        
+        if debug:
+            log.debug(f"Destination.matches() checking destination '{self.id}' against job '{entity.id}'")
+        
         if self.abstract:
+            if debug:
+                log.debug(f"Destination '{self.id}' is abstract, not matching")
             return False
+            
+        # Check resource requirements
+        resource_failures = []
         if (
             self.max_accepted_cores is not None
             and entity.cores is not None
             and self.max_accepted_cores < float(entity.cores)
         ):
-            return False
+            resource_failures.append(f"Job requires {entity.cores} cores but destination max_accepted_cores is {self.max_accepted_cores}")
+            
         if self.max_accepted_mem is not None and entity.mem is not None and self.max_accepted_mem < float(entity.mem):
-            return False
+            resource_failures.append(f"Job requires {entity.mem} mem but destination max_accepted_mem is {self.max_accepted_mem}")
+            
         if (
             self.max_accepted_gpus is not None
             and entity.gpus is not None
             and self.max_accepted_gpus < float(entity.gpus)
         ):
-            return False
+            resource_failures.append(f"Job requires {entity.gpus} gpus but destination max_accepted_gpus is {self.max_accepted_gpus}")
+            
         if (
             self.min_accepted_cores is not None
             and entity.cores is not None
             and self.min_accepted_cores > float(entity.cores)
         ):
-            return False
+            resource_failures.append(f"Job requires {entity.cores} cores but destination min_accepted_cores is {self.min_accepted_cores}")
+            
         if self.min_accepted_mem is not None and entity.mem is not None and self.min_accepted_mem > float(entity.mem):
-            return False
+            resource_failures.append(f"Job requires {entity.mem} mem but destination min_accepted_mem is {self.min_accepted_mem}")
+            
         if (
             self.min_accepted_gpus is not None
             and entity.gpus is not None
             and self.min_accepted_gpus > float(entity.gpus)
         ):
+            resource_failures.append(f"Job requires {entity.gpus} gpus but destination min_accepted_gpus is {self.min_accepted_gpus}")
+
+        if resource_failures and debug:
+            log.debug(f"Destination '{self.id}' resource requirements failed: {'; '.join(resource_failures)}")
             return False
-        return entity.tpv_tags.match(self.tpv_dest_tags)
+
+        # Pass debug flag from context to match function
+        tag_match_result = entity.tpv_tags.match(self.tpv_dest_tags, debug=debug)
+        
+        if debug:
+            log.debug(f"Destination '{self.id}' tag matching result: {tag_match_result}")
+            
+        return tag_match_result
 
     def score(self, entity: Entity) -> int:
         """
